@@ -1,0 +1,53 @@
+{
+  "manifest_version": 3,
+  "name": "ChatGPT Voice Flow",
+  "short_name": "AutoSend",
+  "version": "7.9",
+  "description": "Stable v7.8-based ChatGPT and Claude Voice Flow controller; v7.9 bypasses service-worker startup failures and restores toolbar show/hide.",
+  "permissions": [
+    "storage",
+    "tabs",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://chatgpt.com/*",
+    "https://chat.openai.com/*",
+    "https://claude.ai/*",
+    "https://www.claude.ai/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*",
+        "https://claude.ai/*",
+        "https://www.claude.ai/*"
+      ],
+      "js": [
+        "content-autosend.js"
+      ],
+      "css": [
+        "autosend-style.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "ChatGPT / Claude AutoSend",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    },
+    "default_popup": "popup.html"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "version_name": "v7.9 Runtime"
+}
