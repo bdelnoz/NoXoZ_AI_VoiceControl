@@ -49,5 +49,10 @@
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
-  "version_name": "v8.0.0 Runtime"
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "ai-voice-control@noxoz.be",
+      "strict_min_version": "109.0"
+    }
+  }
 }

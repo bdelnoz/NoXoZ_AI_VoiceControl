@@ -396,13 +396,32 @@
         setStatus('Runtime error: ' + message.slice(0, 48));
     }
 
-    function getChromeLocalStorage() {
+    function getExtensionApi() {
         try {
-            if (typeof chrome !== 'undefined' && chrome && chrome.storage && chrome.storage.local) {
-                return chrome.storage.local;
+            if (typeof browser !== 'undefined' && browser && browser.runtime) {
+                return browser;
             }
         } catch (error) {
-            console.log('[CGAS Mini] chrome.storage unavailable:', error.message);
+            // Ignore and try the Chromium-compatible namespace below.
+        }
+        try {
+            if (typeof chrome !== 'undefined' && chrome && chrome.runtime) {
+                return chrome;
+            }
+        } catch (error) {
+            // Ignore and report the unavailable API below.
+        }
+        return null;
+    }
+
+    function getExtensionLocalStorage() {
+        try {
+            const extensionApi = getExtensionApi();
+            if (extensionApi && extensionApi.storage && extensionApi.storage.local) {
+                return extensionApi.storage.local;
+            }
+        } catch (error) {
+            console.log('[CGAS Mini] extension storage unavailable:', error.message);
         }
         return null;
     }
@@ -431,9 +450,13 @@
     function chromeStorageGet(keys) {
         return new Promise((resolve) => {
             try {
-                const storage = getChromeLocalStorage();
+                const storage = getExtensionLocalStorage();
                 if (!storage || typeof storage.get !== 'function') {
                     resolve({});
+                    return;
+                }
+                if (typeof browser !== 'undefined' && browser && browser.storage && browser.storage.local === storage) {
+                    storage.get(keys).then((result) => resolve(result || {})).catch(() => resolve({}));
                     return;
                 }
                 storage.get(keys, (result) => resolve(result || {}));
@@ -447,9 +470,13 @@
     function chromeStorageSet(values) {
         return new Promise((resolve) => {
             try {
-                const storage = getChromeLocalStorage();
+                const storage = getExtensionLocalStorage();
                 if (!storage || typeof storage.set !== 'function') {
                     resolve();
+                    return;
+                }
+                if (typeof browser !== 'undefined' && browser && browser.storage && browser.storage.local === storage) {
+                    storage.set(values).then(() => resolve()).catch(() => resolve());
                     return;
                 }
                 storage.set(values, () => resolve());
@@ -1184,10 +1211,11 @@
                 }
             }, 650);
 
-            if (typeof chrome !== 'undefined' && chrome && chrome.runtime && typeof chrome.runtime.reload === 'function') {
+            const extensionApi = getExtensionApi();
+            if (extensionApi && extensionApi.runtime && typeof extensionApi.runtime.reload === 'function') {
                 try {
                     window.location.reload();
-                    chrome.runtime.reload();
+                    extensionApi.runtime.reload();
                     return;
                 } catch (error) {
                     logRuntimeError('direct extension reload failed', error);
@@ -2875,11 +2903,12 @@
             if (window.__CGAS_ACTION_TOGGLE_LISTENER_INSTALLED__) {
                 return;
             }
-            if (typeof chrome === 'undefined' || !chrome || !chrome.runtime || !chrome.runtime.onMessage) {
+            const extensionApi = getExtensionApi();
+            if (!extensionApi || !extensionApi.runtime || !extensionApi.runtime.onMessage) {
                 return;
             }
             window.__CGAS_ACTION_TOGGLE_LISTENER_INSTALLED__ = true;
-            chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+            extensionApi.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 if (!message || message.type !== 'CGAS_ACTION_TOGGLE_WIDGET') {
                     return false;
                 }
