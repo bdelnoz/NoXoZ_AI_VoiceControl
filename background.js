@@ -8,10 +8,42 @@
  * PROJECT      : NoXoZ_AI_VoiceControl
  * PROJECT ROOT : /mnt/data2_78g/Security/scripts/Projects_web/NoXoZ_AI_VoiceControl/
  * TARGET USAGE : Browser action show/hide bridge for ChatGPT / Claude AutoSend widget.
- * VERSION      : v8.0.0
- * DATE         : 2026-06-16 CEST
+ * VERSION      : v8.9.0
+ * DATE         : 2026-06-28 CEST
  * ==============================================================================
  * CHANGELOG:
+ *   v8.9.0 – 2026-06-28 – Bruno DELNOZ / ChatGPT
+ *       Changed:
+ *       - Stable checkpoint metadata update derived from v8.2.1.
+ *       Preserved:
+ *       - Reload Extension background behavior unchanged from v8.2.1.
+ *
+ *   v8.2.1 – 2026-06-28 – Bruno DELNOZ / ChatGPT
+ *       Changed:
+ *       - Version bump only for Reload Extension validation after v8.2.0.
+ *
+ *   v8.1.9 – 2026-06-28 – Bruno DELNOZ / ChatGPT
+ *       Fixed:
+ *       - Reload Extension now uses a two-step prepare/execute bridge: the background stores the source tab and acknowledges first, then performs chrome.runtime.reload(), then refreshes ChatGPT after runtime restart.
+ *
+ *   v8.1.5 – 2026-06-28 – Bruno DELNOZ / ChatGPT
+ *       Changed:
+ *       - Version metadata only.
+ *       Preserved:
+ *       - Reload Extension background behavior remains unchanged from v8.1.4.
+ *
+ *   v8.1.4 – 2026-06-28 – Bruno DELNOZ / ChatGPT
+ *       Fixed:
+ *       - Reload Extension now stores the current tab, reloads the unpacked extension runtime first, then refreshes the ChatGPT tab after background restart.
+ *
+ *   v8.1.2 – 2026-06-28 – Bruno DELNOZ / ChatGPT
+ *       Fixed:
+ *       - Reload bridge accepts the direct reload message used by the content script and preserves the working page-refresh-first behavior.
+ *
+ *   v8.1.1 – 2026-06-28 – Bruno DELNOZ / ChatGPT
+ *       Fixed:
+ *       - Reload bridge now refreshes the active tab before reloading the extension runtime.
+ *
  *   v7.9.5 – 2026-06-16 – Bruno DELNOZ / ChatGPT
  *       Version metadata only; runtime behavior unchanged.
  *
@@ -49,6 +81,119 @@
     const TOGGLE_MESSAGE = { type: 'CGAS_ACTION_TOGGLE_WIDGET' };
     const SCRIPT_FILE = 'content-autosend.js';
     const CSS_FILE = 'autosend-style.css';
+
+    const PENDING_RELOAD_KEY = 'CGAS_PENDING_RELOAD_TAB';
+    const PENDING_RELOAD_MAX_AGE_MS = 30000;
+
+    function storageGet(keys) {
+        return new Promise((resolve) => {
+            try {
+                chrome.storage.local.get(keys, (items) => {
+                    const runtimeError = chrome.runtime.lastError;
+                    if (runtimeError) {
+                        resolve({});
+                        return;
+                    }
+                    resolve(items || {});
+                });
+            } catch (error) {
+                resolve({});
+            }
+        });
+    }
+
+    function storageSet(items) {
+        return new Promise((resolve) => {
+            try {
+                chrome.storage.local.set(items, () => resolve(!chrome.runtime.lastError));
+            } catch (error) {
+                resolve(false);
+            }
+        });
+    }
+
+    function storageRemove(keys) {
+        return new Promise((resolve) => {
+            try {
+                chrome.storage.local.remove(keys, () => resolve(!chrome.runtime.lastError));
+            } catch (error) {
+                resolve(false);
+            }
+        });
+    }
+
+    function reloadTab(tabId) {
+        return new Promise((resolve) => {
+            try {
+                if (!tabId || !chrome.tabs || typeof chrome.tabs.reload !== 'function') {
+                    resolve(false);
+                    return;
+                }
+                chrome.tabs.reload(tabId, {}, () => {
+                    const runtimeError = chrome.runtime.lastError;
+                    if (runtimeError) {
+                        log('chrome.tabs.reload failed.', runtimeError.message || String(runtimeError));
+                        resolve(false);
+                        return;
+                    }
+                    resolve(true);
+                });
+            } catch (error) {
+                log('chrome.tabs.reload crashed.', error && error.message ? error.message : String(error));
+                resolve(false);
+            }
+        });
+    }
+
+    async function consumePendingReloadAfterRuntimeStart() {
+        const items = await storageGet([PENDING_RELOAD_KEY]);
+        const pending = items && items[PENDING_RELOAD_KEY];
+        if (!pending || !pending.tabId || !pending.createdAt) {
+            return;
+        }
+
+        await storageRemove([PENDING_RELOAD_KEY]);
+
+        if (Date.now() - Number(pending.createdAt) > PENDING_RELOAD_MAX_AGE_MS) {
+            log('Pending reload ignored: stale request.');
+            return;
+        }
+
+        setTimeout(() => {
+            reloadTab(pending.tabId).then((ok) => {
+                log(ok ? 'Pending ChatGPT tab refreshed after runtime reload.' : 'Pending ChatGPT tab refresh failed after runtime reload.');
+            });
+        }, 450);
+    }
+
+    async function prepareRuntimeReloadRequest(tabId, sourceVersion) {
+        if (tabId) {
+            await storageSet({
+                [PENDING_RELOAD_KEY]: {
+                    tabId,
+                    sourceVersion: sourceVersion || '',
+                    createdAt: Date.now()
+                }
+            });
+        }
+        return { ok: true, prepared: true, tabId };
+    }
+
+    function executeRuntimeReload() {
+        setTimeout(() => {
+            try {
+                chrome.runtime.reload();
+            } catch (error) {
+                log('chrome.runtime.reload failed.', error && error.message ? error.message : String(error));
+            }
+        }, 120);
+    }
+
+    async function handleRuntimeReloadRequest(tabId, sourceVersion) {
+        const response = await prepareRuntimeReloadRequest(tabId, sourceVersion);
+        setTimeout(executeRuntimeReload, 180);
+        return { ...response, reloading: true };
+    }
 
     function log(message, detail) {
         if (detail) {
@@ -151,22 +296,68 @@
         log('Toggle still failed after injection.', secondTry.error);
     }
 
+    consumePendingReloadAfterRuntimeStart().catch((error) => {
+        log('Pending reload handler crashed.', error && error.message ? error.message : String(error));
+    });
+
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-        if (!message || message.type !== 'CGAS_RELOAD_EXTENSION_THEN_TAB') {
+        const supportedTypes = [
+            'CGAS_RELOAD_EXTENSION_PREPARE',
+            'CGAS_RELOAD_EXTENSION_EXECUTE',
+            'CGAS_RELOAD_EXTENSION',
+            'CGAS_RELOAD_EXTENSION_THEN_TAB'
+        ];
+        if (!message || !supportedTypes.includes(message.type)) {
             return false;
         }
-        try {
-            sendResponse({ ok: true, reloading: true });
-        } catch (error) {
-            // sendResponse may already be invalid if the sender disappears.
+
+        const tabId = sender && sender.tab && sender.tab.id ? sender.tab.id : null;
+        log('Reload extension requested from widget: ' + message.type);
+
+        if (message.type === 'CGAS_RELOAD_EXTENSION_EXECUTE') {
+            try {
+                sendResponse({ ok: true, reloading: true, tabId });
+            } catch (error) {
+                // Sender may disappear during runtime reload.
+            }
+            executeRuntimeReload();
+            return true;
         }
-        log('Reload extension requested from widget.');
-        try {
-            chrome.runtime.reload();
-        } catch (error) {
-            log('chrome.runtime.reload failed.', error && error.message ? error.message : String(error));
+
+        if (message.type === 'CGAS_RELOAD_EXTENSION_PREPARE') {
+            prepareRuntimeReloadRequest(tabId, message.sourceVersion).then((response) => {
+                try {
+                    sendResponse(response);
+                } catch (error) {
+                    // Sender may disappear during runtime reload.
+                }
+            }).catch((error) => {
+                log('reload prepare failed.', error && error.message ? error.message : String(error));
+                try {
+                    sendResponse({ ok: false, error: error && error.message ? error.message : String(error) });
+                } catch (sendError) {
+                    // Sender may disappear during runtime reload.
+                }
+            });
+            return true;
         }
-        return false;
+
+        handleRuntimeReloadRequest(tabId, message.sourceVersion).then((response) => {
+            try {
+                sendResponse(response);
+            } catch (error) {
+                // Sender may disappear during runtime reload.
+            }
+        }).catch((error) => {
+            log('reload bridge failed.', error && error.message ? error.message : String(error));
+            try {
+                sendResponse({ ok: false, error: error && error.message ? error.message : String(error) });
+            } catch (sendError) {
+                // Sender may disappear during runtime reload.
+            }
+        });
+
+        return true;
     });
 
     chrome.action.onClicked.addListener((tab) => {

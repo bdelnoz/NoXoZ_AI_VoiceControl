@@ -8,10 +8,68 @@
  * PROJECT      : NoXoZ_AI_VoiceControl
  * PROJECT ROOT : /mnt/data2_78g/Security/scripts/Projects_web/NoXoZ_AI_VoiceControl/
  * TARGET USAGE : Personal dual-mode ChatGPT / Claude modular voice-flow controller.
- * VERSION      : v8.0.0
- * DATE         : 2026-06-16 CEST
+ * VERSION      : v8.9.0
+ * DATE         : 2026-06-28 CEST
  * ==============================================================================
  * CHANGELOG:
+ *   v8.9.0 – 2026-06-28 – Bruno DELNOZ / ChatGPT
+ *       Changed:
+ *       - Stable checkpoint release derived from v8.2.1.
+ *       - Moved Reload Extension from the main button stack to a tiny developer reload control next to the version badge in MAXI mode.
+ *       Preserved:
+ *       - Full Flow, TOS, AutoSend, Trigger ReadAloud auto, Restart loop, Set ReadAloud Mode, ReadAloud Last and Stop ReadAloud behavior unchanged.
+ *
+ *   v8.2.1 – 2026-06-28 – Bruno DELNOZ / ChatGPT
+ *       Changed:
+ *       - Version bump only for Reload Extension validation after v8.2.0.
+ *       Preserved:
+ *       - No functional behavior changed.
+ *
+ *   v8.1.9 – 2026-06-28 – Bruno DELNOZ / ChatGPT
+ *       Fixed:
+ *       - Reload Extension now uses a two-step prepare/execute background bridge so the old content script receives an acknowledgement before chrome.runtime.reload() invalidates the extension context.
+ *       - Trigger ReadAloud auto now retries the last-assistant-message ReadAloud action when ChatGPT exposes ReadAloud but playback does not start on the first attempt.
+ *       Changed:
+ *       - Default Time of Silence is now 5 seconds.
+ *       Preserved:
+ *       - Set ReadAloud Mode append behavior from v8.1.5.
+ *       - TOS monitoring, AutoSend, ReadAloud Last, Stop ReadAloud and restart loop behavior are otherwise unchanged.
+ *
+ *   v8.1.5 – 2026-06-28 – Bruno DELNOZ / ChatGPT
+ *       Fixed:
+ *       - Set ReadAloud Mode no longer auto-sends when existing user text is already present in the composer.
+ *       - Set ReadAloud Mode keeps appending activation/deactivation text after existing transcribed text and leaves the final send decision to the user.
+ *       Preserved:
+ *       - Reload Extension behavior remains unchanged from v8.1.4.
+ *       - Full Flow, TOS, AutoSend, ReadAloud Last, Stop ReadAloud, Trigger ReadAloud auto and restart loop are not otherwise changed.
+ *
+ *   v8.1.4 – 2026-06-28 – Bruno DELNOZ / ChatGPT
+ *       Fixed:
+ *       - Reload Extension now asks the background service worker to reload the unpacked extension first, then refresh the ChatGPT tab after the runtime restarts.
+ *       - Set ReadAloud Mode now targets the active/non-empty composer before appending so existing transcribed text is preserved.
+ *
+ *   v8.1.2 – 2026-06-28 – Bruno DELNOZ / ChatGPT
+ *       Fixed:
+ *       - Reload Extension restored to the working page-refresh-first bridge behavior.
+ *       - Widget status messages now expose the full text through a two-line status area and tooltip.
+ *       - Set ReadAloud Mode now appends its activation/deactivation text after existing composer content instead of replacing it.
+ *       - Manual ReadAloud Last now clears its active state after playback ends.
+ *       - Manual ReadAloud Last and Stop ReadAloud now continue the Full Flow next step when Full Flow is ACTIVATED.
+ *
+ *   v8.1.1 – 2026-06-28 – Bruno DELNOZ / ChatGPT
+ *       Fixed:
+ *       - Reworked ReadAloud Last / Stop / automatic Trigger ReadAloud to target the last assistant message More menu first.
+ *       - Added pointer-event based user-click simulation with centered coordinates for ChatGPT menu actions.
+ *       - Reload Extension now uses the background reload bridge before refreshing the page.
+ *
+ *   v8.1.0 – 2026-06-28 – Bruno DELNOZ / ChatGPT
+ *       Fixed:
+ *       - Removed false voice-recording blocking from Set ReadAloud Mode and manual ReadAloud Last Message.
+ *       - Automatic Trigger ReadAloud no longer stops on stale voice-recording evidence after AutoSend.
+ *       - Full Flow ACTIVATED enables the full loop controls and arms an immediate voice start attempt.
+ *       - Added a dedicated voice-start selector separate from transcription validation.
+ *       - ReadAloud action lookup now checks direct buttons and the More menu before failing.
+ *
  *   v7.9.5 – 2026-06-16 – Bruno DELNOZ / ChatGPT
  *       Changed:
  *       - Visible widget title is AI Voice Control in MAXI and MINI modes.
@@ -205,8 +263,18 @@
 (function initBraveDualAutoSendMini() {
     'use strict';
 
-    const VERSION = '8.0.0';
+    const VERSION = '8.9.0';
     const WIDGET_ID = 'cgas-mini-widget';
+
+    function getExtensionApi() {
+        if (typeof chrome !== 'undefined' && chrome && chrome.runtime && typeof chrome.runtime.sendMessage === 'function') {
+            return chrome;
+        }
+        if (typeof browser !== 'undefined' && browser && browser.runtime && typeof browser.runtime.sendMessage === 'function') {
+            return browser;
+        }
+        return null;
+    }
 
     /*
      * Do not abort when the same version is reinjected. After an extension reload,
@@ -258,7 +326,7 @@
         autoStartCheckMs: 700,
         tosMinSeconds: 0,
         tosMaxSeconds: 30,
-        tosDefaultSeconds: 3,
+        tosDefaultSeconds: 5,
         thresholdMin: 0,
         thresholdMax: 100,
         thresholdDefault: 35,
@@ -274,6 +342,8 @@
     const BAD_SEND_LABEL_RE = /stop|arr[eê]ter|cancel|annuler|voice|dictation|micro|audio|upload|attach|tool|search|reason|model/i;
     const TRANSCRIPTION_FINISH_LABEL_RE = /done|finish|finished|complete|confirm|accept|check|submit\s+dictation|end\s+dictation|stop\s+dictation|stop\s+recording|valider|terminer|confirmer|accepter|finir|arr[eê]ter\s+(la\s+)?dict[eé]e|arr[eê]ter\s+(l['’]?)enregistrement/i;
     const TRANSCRIPTION_BAD_FINISH_LABEL_RE = /cancel|close|dismiss|delete|remove|clear|send|envoyer|submit\s+message|attach|upload|file|image|search|tool|reason|model|read\s+aloud|lire|voice\s*mode|conversation|conversationnel|advanced\s+voice|live\s+voice|start\s+voice|open\s+voice|audio\s+mode|call|appel/i;
+    const VOICE_START_LABEL_RE = /dictate|dictation|voice\s+input|voice\s+typing|speech\s+to\s+text|microphone|\bmic\b|start\s+(dictation|recording|transcription)|new\s+(dictation|transcription)|record\s+(audio|voice)|parler|dicter|dict[eé]e|micro|transcription\s+vocale|saisie\s+vocale/i;
+    const VOICE_START_BAD_LABEL_RE = /stop|cancel|done|finish|complete|confirm|accept|check|send|envoyer|submit|attach|upload|file|image|search|tool|reason|model|read\s+aloud|lire|voice\s*mode|conversation|conversationnel|advanced\s+voice|live\s+voice|audio\s+mode|call|appel|close|dismiss|delete|remove|clear|settings|param[eè]tres/i;
 
     const state = {
         fullFlowEnabled: false,
@@ -318,6 +388,7 @@
     let autoStartBusy = false;
     let autoReadAloudClickedAt = 0;
     let autoReadAloudSeenStop = false;
+    let autoReadAloudAttemptCount = 0;
     let lastAutoStartAt = 0;
     let cycleDone = true;
     let vClickedThisCycle = false;
@@ -569,6 +640,7 @@
         }
 
         status.textContent = text;
+        status.title = text;
         lastStatusText = text;
         lastStatusUiAt = ts;
     }
@@ -641,6 +713,42 @@
         return '';
     }
 
+    function getRawComposerText(el) {
+        if (!el) {
+            return '';
+        }
+        if (typeof el.value === 'string') {
+            return String(el.value || '');
+        }
+        return String(el.innerText || el.textContent || '');
+    }
+
+    function getBestComposerCandidateForWrite(preferExistingText) {
+        const candidates = getComposerCandidates();
+        if (candidates.length === 0) {
+            return null;
+        }
+
+        const active = document.activeElement;
+        if (active) {
+            for (const el of candidates) {
+                if (el === active || (typeof el.contains === 'function' && el.contains(active))) {
+                    return el;
+                }
+            }
+        }
+
+        if (preferExistingText) {
+            for (const el of candidates) {
+                if (getRawComposerText(el).trim()) {
+                    return el;
+                }
+            }
+        }
+
+        return candidates[0];
+    }
+
     function dispatchComposerInput(el, text) {
         try {
             el.dispatchEvent(new InputEvent('input', {
@@ -654,7 +762,6 @@
         }
         el.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
     }
-
     function setComposerText(text) {
         const value = String(text || '');
         for (const el of getComposerCandidates()) {
@@ -693,6 +800,62 @@
             } catch (error) {
                 console.log('[CGAS Mini] composer text injection failed:', error.message);
             }
+        }
+        return false;
+    }
+
+    function appendComposerText(text) {
+        const addition = String(text || '').trim();
+        if (!addition) {
+            return false;
+        }
+
+        const el = getBestComposerCandidateForWrite(true);
+        if (!el) {
+            return false;
+        }
+
+        try {
+            el.focus();
+
+            if (typeof el.value === 'string') {
+                const current = String(el.value || '');
+                const separator = current.trim() ? '\n\n' : '';
+                const nextValue = current + separator + addition;
+                const proto = el.tagName === 'TEXTAREA'
+                    ? window.HTMLTextAreaElement.prototype
+                    : window.HTMLInputElement.prototype;
+                const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
+                if (descriptor && typeof descriptor.set === 'function') {
+                    descriptor.set.call(el, nextValue);
+                } else {
+                    el.value = nextValue;
+                }
+                dispatchComposerInput(el, nextValue);
+                return true;
+            }
+
+            const current = getRawComposerText(el);
+            const value = (current.trim() ? '\n\n' : '') + addition;
+
+            const selection = window.getSelection && window.getSelection();
+            if (selection && document.createRange) {
+                const range = document.createRange();
+                range.selectNodeContents(el);
+                range.collapse(false);
+                selection.removeAllRanges();
+                selection.addRange(range);
+            }
+
+            if (document.queryCommandSupported && document.queryCommandSupported('insertText')) {
+                document.execCommand('insertText', false, value);
+            } else {
+                el.textContent = current + value;
+            }
+            dispatchComposerInput(el, current + value);
+            return true;
+        } catch (error) {
+            console.log('[CGAS Mini] composer append failed:', error.message);
         }
         return false;
     }
@@ -805,10 +968,34 @@
     }
 
 
+    function getFloatingMenuRoots() {
+        const roots = [];
+        const seen = new Set();
+        const selectors = [
+            '[role="menu"]',
+            '[role="listbox"]',
+            '[data-radix-popper-content-wrapper]',
+            '[data-radix-menu-content]',
+            '[data-side]',
+            '[cmdk-list]',
+            '[cmdk-root]'
+        ];
+        for (const selector of selectors) {
+            for (const root of safeQueryAll(document, selector)) {
+                if (!root || seen.has(root) || !isElementVisible(root) || closestOrNull(root, '#' + WIDGET_ID)) {
+                    continue;
+                }
+                seen.add(root);
+                roots.push(root);
+            }
+        }
+        return roots;
+    }
+
     function readAloudActionText(mode) {
         return mode === 'stop'
-            ? /(^|\b)(stop|stop\s+reading|arr[eê]ter|arr[eê]ter\s+la\s+lecture|interrompre)(\b|$)/i
-            : /read\s*aloud|read\s+out|lire\s+(à|a)\s+voix\s+haute|lecture\s+audio|lire\s+le\s+message/i;
+            ? /(^|\b)(stop\s+(read\s*aloud|reading|speaking|audio)|stop|arr[eê]ter|arr[eê]ter\s+la\s+lecture|interrompre)(\b|$)/i
+            : /read\s*aloud|read\s+out|read\s+message|listen|speaker|speak\s+message|lire\s+(à|a)\s+voix\s+haute|lecture\s+audio|lire\s+le\s+message/i;
     }
 
     function getVisibleAssistantMessageRoots() {
@@ -872,11 +1059,43 @@
         }
 
         try {
-            for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+            if (typeof el.scrollIntoView === 'function') {
+                el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+            }
+        } catch (error) {
+            // scrollIntoView may fail on detached nodes; continue with the click fallback.
+        }
+
+        const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : { left: 0, top: 0, width: 1, height: 1 };
+        const clientX = Math.max(1, Math.round(rect.left + Math.max(1, rect.width / 2)));
+        const clientY = Math.max(1, Math.round(rect.top + Math.max(1, rect.height / 2)));
+
+        try {
+            const pointerEvents = ['pointerover', 'pointerenter', 'pointermove', 'pointerdown', 'pointerup'];
+            if (typeof PointerEvent === 'function') {
+                for (const type of pointerEvents) {
+                    el.dispatchEvent(new PointerEvent(type, {
+                        bubbles: true,
+                        cancelable: true,
+                        view: window,
+                        pointerId: 1,
+                        pointerType: 'mouse',
+                        isPrimary: true,
+                        clientX,
+                        clientY,
+                        buttons: type === 'pointerdown' ? 1 : 0
+                    }));
+                }
+            }
+
+            for (const type of ['mouseover', 'mouseenter', 'mousemove', 'mousedown', 'mouseup', 'click']) {
                 el.dispatchEvent(new MouseEvent(type, {
                     bubbles: true,
                     cancelable: true,
-                    view: window
+                    view: window,
+                    clientX,
+                    clientY,
+                    buttons: type === 'mousedown' ? 1 : 0
                 }));
             }
             return true;
@@ -896,11 +1115,20 @@
         const searchRoot = root || document;
         const selectors = [
             '[role="menuitem"]',
+            '[role="menuitemradio"]',
+            '[role="option"]',
+            '[cmdk-item]',
+            '[data-radix-collection-item]',
             'button',
             '[role="button"]',
-            '[cmdk-item]',
+            'a',
+            '[aria-label]',
+            '[title]',
             '[data-testid*="read" i]',
-            '[data-testid*="stop" i]'
+            '[data-testid*="stop" i]',
+            '[data-testid*="voice" i]',
+            '[data-testid*="audio" i]',
+            '[data-testid*="speaker" i]'
         ];
 
         for (const selector of selectors) {
@@ -913,7 +1141,12 @@
                     textOf(el),
                     el.getAttribute && el.getAttribute('aria-label'),
                     el.getAttribute && el.getAttribute('title'),
-                    el.getAttribute && el.getAttribute('data-testid')
+                    el.getAttribute && el.getAttribute('data-testid'),
+                    el.querySelector && Array.from(el.querySelectorAll('[aria-label],[title],[data-testid]')).map((child) => [
+                        child.getAttribute('aria-label'),
+                        child.getAttribute('title'),
+                        child.getAttribute('data-testid')
+                    ].filter(Boolean).join(' ')).join(' ')
                 ].filter(Boolean).join(' '));
 
                 if (!label || !matcher.test(label)) {
@@ -945,7 +1178,7 @@
             return false;
         }
 
-        if (/more|actions?|options?|overflow|menu|⋯|…|\.\.\./i.test(raw)) {
+        if (/more|plus|actions?|options?|overflow|menu|⋯|…|\.\.\./i.test(raw)) {
             return true;
         }
 
@@ -988,7 +1221,7 @@
 
             let score = baseScore;
 
-            if (/more|actions?|options?|overflow|menu|⋯|…|\.\.\./i.test(raw)) {
+            if (/more|plus|actions?|options?|overflow|menu|⋯|…|\.\.\./i.test(raw)) {
                 score += 500;
             }
 
@@ -1007,12 +1240,15 @@
 
         const selectors = [
             'button[aria-label*="More" i]',
+            'button[aria-label*="Plus" i]',
             'button[aria-label*="action" i]',
             'button[aria-label*="option" i]',
             'button[title*="More" i]',
+            'button[title*="Plus" i]',
             'button[title*="action" i]',
             'button[title*="option" i]',
             'button[data-testid*="more" i]',
+            'button[data-testid*="overflow" i]',
             'button[aria-haspopup="menu"]',
             '[role="button"][aria-haspopup="menu"]',
             'button',
@@ -1049,6 +1285,12 @@
     async function waitForReadAloudMenuAction(mode, timeoutMs) {
         const started = now();
         while (now() - started < timeoutMs) {
+            for (const root of getFloatingMenuRoots()) {
+                const action = findReadAloudActionCandidate(mode, root);
+                if (action) {
+                    return action;
+                }
+            }
             const action = findReadAloudActionCandidate(mode, document);
             if (action) {
                 return action;
@@ -1059,28 +1301,34 @@
     }
 
     async function clickChatGPTReadAloudMenuAction(mode) {
-        if (mode === 'stop') {
-            const alreadyVisibleStop = findReadAloudActionCandidate('stop', document);
-            if (alreadyVisibleStop) {
-                return clickLikeUser(alreadyVisibleStop);
-            }
-        }
-
         const messageRoot = getLastAssistantMessageRoot();
         if (!messageRoot) {
             return false;
         }
 
         try {
+            if (typeof messageRoot.scrollIntoView === 'function') {
+                messageRoot.scrollIntoView({ block: 'center', inline: 'nearest' });
+                await sleep(160);
+            }
+        } catch (error) {
+            logRuntimeError('read aloud scroll prep failed', error);
+        }
+
+        try {
             const rect = messageRoot.getBoundingClientRect();
-            const x = Math.max(8, Math.min(window.innerWidth - 8, rect.right - 120));
+            const x = Math.max(8, Math.min(window.innerWidth - 8, rect.right - 88));
             const y = Math.max(8, Math.min(window.innerHeight - 8, rect.bottom - 32));
 
-            for (const type of ['mouseover', 'mouseenter', 'mousemove']) {
-                messageRoot.dispatchEvent(new MouseEvent(type, {
+            for (const type of ['pointerover', 'pointerenter', 'pointermove', 'mouseover', 'mouseenter', 'mousemove']) {
+                const EventClass = type.startsWith('pointer') && typeof PointerEvent === 'function' ? PointerEvent : MouseEvent;
+                messageRoot.dispatchEvent(new EventClass(type, {
                     bubbles: true,
                     cancelable: true,
                     view: window,
+                    pointerId: 1,
+                    pointerType: 'mouse',
+                    isPrimary: true,
                     clientX: x,
                     clientY: y
                 }));
@@ -1089,24 +1337,36 @@
             logRuntimeError('read aloud hover prep failed', error);
         }
 
-        await sleep(160);
+        await sleep(300);
 
+        /* Stop can sometimes be exposed as a direct visible button while playback is active. */
+        if (mode === 'stop') {
+            const directStop = findReadAloudActionCandidate('stop', messageRoot) || findReadAloudActionCandidate('stop', document);
+            if (directStop) {
+                return clickLikeUser(directStop);
+            }
+        }
+
+        /* ChatGPT currently exposes Read Aloud from the message three-dots menu. */
         const more = findMoreActionsButton(messageRoot);
-        if (!more) {
-            setStatus('More not found');
-            return false;
+        if (more) {
+            clickLikeUser(more);
+            await sleep(360);
+
+            const menuAction = await waitForReadAloudMenuAction(mode, 3200);
+            if (menuAction) {
+                return clickLikeUser(menuAction);
+            }
         }
 
-        clickLikeUser(more);
-        await sleep(180);
-
-        const menuAction = await waitForReadAloudMenuAction(mode, 1600);
-        if (!menuAction) {
-            setStatus(mode === 'stop' ? 'Stop not found' : 'ReadAloud not found');
-            return false;
+        /* Fallback only after the message menu path failed; avoids clicking stale global UI. */
+        const fallback = findReadAloudActionCandidate(mode, messageRoot) || findReadAloudActionCandidate(mode, document);
+        if (fallback) {
+            return clickLikeUser(fallback);
         }
 
-        return clickLikeUser(menuAction);
+        setStatus(mode === 'stop' ? 'Stop not found' : 'ReadAloud not found');
+        return false;
     }
 
     function detectVisiblePageReadAloudStop() {
@@ -1128,12 +1388,53 @@
         }
     }
 
-    async function togglePageReadAloudPlayback() {
-        const wantsStop = isReadAloudPlaybackActive();
-        if (!wantsStop && hasActiveVoiceRecordingEvidence()) {
-            setStatus('ReadAloud blocked / voice recording active');
+    function continueFullFlowAfterManualReadAloud(reason) {
+        if (!state.fullFlowEnabled) {
             return;
         }
+
+        state.enabled = true;
+        cycleDone = false;
+        waitingUserInputAfterResponse = false;
+        autoStartArmed = true;
+        autoStartBusy = false;
+        skipReadAloudGateOnce = true;
+        resetAutoReadAloudFlow();
+        saveStatePatch({ enabled: true }).catch((error) => logRuntimeError('manual ReadAloud flow save failed', error));
+        updateWidget();
+        setStatus(reason || 'ReadAloud done / start voice');
+        window.setTimeout(() => {
+            autoStartVoiceRecordingIfReady().catch((error) => logRuntimeError('manual ReadAloud next step failed', error));
+        }, 260);
+    }
+
+    function watchManualReadAloudEnd(startedAt) {
+        let stopWasVisible = false;
+        let checks = 0;
+        const timer = window.setInterval(() => {
+            checks += 1;
+            const stopVisible = detectVisiblePageReadAloudStop();
+            if (stopVisible) {
+                stopWasVisible = true;
+                state.pageReadAloudActive = true;
+                updateWidget();
+                return;
+            }
+
+            const oldEnough = now() - startedAt > 1800;
+            if ((stopWasVisible && oldEnough) || checks > 900) {
+                window.clearInterval(timer);
+                state.pageReadAloudActive = false;
+                updateWidget();
+                if (stopWasVisible) {
+                    continueFullFlowAfterManualReadAloud('ReadAloud done / start voice');
+                }
+            }
+        }, 700);
+    }
+
+    async function togglePageReadAloudPlayback() {
+        const wantsStop = isReadAloudPlaybackActive();
         const mode = wantsStop ? 'stop' : 'start';
         const ok = await clickChatGPTReadAloudMenuAction(mode);
         if (!ok) {
@@ -1148,13 +1449,18 @@
         window.setTimeout(syncPageReadAloudState, 700);
         window.setTimeout(syncPageReadAloudState, 1800);
         window.setTimeout(syncPageReadAloudState, 3600);
+
+        if (mode === 'start') {
+            watchManualReadAloudEnd(state.pageReadAloudLastActionAt);
+        } else {
+            continueFullFlowAfterManualReadAloud('ReadAloud stopped / start voice');
+        }
     }
 
     async function handleReloadExtensionClick() {
-        setStatus('Reload Ext');
+        setStatus('Reload Extension / prepare');
 
-        /* Reload defaults requested for v5.8:
-           Full Flow NO; all operational sub-toggles YES; MAXI mode. */
+        /* Reload defaults: Full Flow NO; operational sub-toggles YES; MAXI mode. */
         state.fullFlowEnabled = false;
         state.enabled = true;
         state.sendEnabled = true;
@@ -1162,6 +1468,7 @@
         state.minimized = false;
         state.maximized = true;
         state.visible = true;
+        updateWidget();
 
         await saveStatePatch({
             fullFlowEnabled: false,
@@ -1171,43 +1478,65 @@
             minimized: false,
             maximized: true,
             visible: true
-        });
-
-        await positionMaxiAtRequestedReloadAnchor(true);
+        }).catch((error) => logRuntimeError('reload state save failed', error));
 
         try {
-            window.setTimeout(() => {
-                try {
-                    window.location.reload();
-                } catch (error) {
-                    logRuntimeError('delayed tab reload failed', error);
-                }
-            }, 650);
+            await positionMaxiAtRequestedReloadAnchor(true);
+        } catch (error) {
+            logRuntimeError('reload anchor failed', error);
+        }
 
-            if (typeof chrome !== 'undefined' && chrome && chrome.runtime && typeof chrome.runtime.reload === 'function') {
-                try {
-                    window.location.reload();
-                    chrome.runtime.reload();
-                    return;
-                } catch (error) {
-                    logRuntimeError('direct extension reload failed', error);
+        try {
+            const extensionApi = getExtensionApi();
+            if (!extensionApi || !extensionApi.runtime || typeof extensionApi.runtime.sendMessage !== 'function') {
+                setStatus('Reload bridge unavailable');
+                return;
+            }
+
+            const prepared = await extensionApi.runtime.sendMessage({
+                type: 'CGAS_RELOAD_EXTENSION_PREPARE',
+                sourceVersion: VERSION
+            });
+
+            if (!prepared || !prepared.ok) {
+                setStatus('Reload bridge prepare failed');
+                return;
+            }
+
+            setStatus('Reload Extension / runtime reload');
+
+            try {
+                const execute = extensionApi.runtime.sendMessage({
+                    type: 'CGAS_RELOAD_EXTENSION_EXECUTE',
+                    sourceVersion: VERSION
+                });
+                if (execute && typeof execute.catch === 'function') {
+                    execute.catch((error) => {
+                        const message = error && error.message ? error.message : String(error || '');
+                        if (!/context invalidated|extension context|receiving end|message port closed/i.test(message)) {
+                            console.log('[CGAS Mini] reload execute send failed:', message);
+                        }
+                    });
+                }
+            } catch (error) {
+                const message = error && error.message ? error.message : String(error || '');
+                if (!/context invalidated|extension context|receiving end|message port closed/i.test(message)) {
+                    console.log('[CGAS Mini] reload execute send crashed:', message);
                 }
             }
         } catch (error) {
-            logRuntimeError('reload extension request failed', error);
+            setStatus('Reload bridge failed');
+            console.log('[CGAS Mini] reload bridge failed:', error && error.message ? error.message : error);
         }
-
-        window.setTimeout(() => window.location.reload(), 120);
     }
 
     async function sendReadAloudActivation() {
-        if (hasActiveVoiceRecordingEvidence()) {
-            setStatus('Set ReadAloud blocked / voice recording active');
-            return;
-        }
         const nextEnabled = !state.readAloudEnabled;
         const text = nextEnabled ? 'activation mode Read Aloud' : 'désactivation mode Read Aloud';
-        const ok = setComposerText(text);
+        const existingTextBefore = getComposerText();
+        const hadExistingComposerText = Boolean(existingTextBefore && existingTextBefore.trim());
+
+        const ok = appendComposerText(text);
         if (!ok) {
             setStatus('Composer not found');
             return;
@@ -1215,6 +1544,11 @@
 
         await waitUntilComposerHasText(text, 1800);
         await sleep(240);
+
+        if (hadExistingComposerText) {
+            setStatus(nextEnabled ? 'READALOUD ON appended / not sent' : 'READALOUD OFF appended / not sent');
+            return;
+        }
 
         const sent = await clickCurrentSendButton(nextEnabled ? 'READALOUD ON sent' : 'READALOUD OFF sent');
 
@@ -1519,6 +1853,117 @@
         return false;
     }
 
+    function scoreVoiceStartButton(button, composerRoot) {
+        if (!button || (typeof button.disabled === 'boolean' && button.disabled) || !isElementVisible(button)) {
+            return -1;
+        }
+        if (closestOrNull(button, '#' + WIDGET_ID)) {
+            return -1;
+        }
+        if (composerRoot && !composerRoot.contains(button) && !isLowerComposerControl(button, composerRoot)) {
+            return -1;
+        }
+
+        const label = normalizeSpace([
+            textOf(button),
+            button.getAttribute && button.getAttribute('aria-label'),
+            button.getAttribute && button.getAttribute('title'),
+            button.getAttribute && button.getAttribute('data-testid'),
+            button.querySelector && Array.from(button.querySelectorAll('[aria-label],[title],[data-testid]')).map((child) => [
+                child.getAttribute('aria-label'),
+                child.getAttribute('title'),
+                child.getAttribute('data-testid')
+            ].filter(Boolean).join(' ')).join(' ')
+        ].filter(Boolean).join(' '));
+
+        if (label && VOICE_START_BAD_LABEL_RE.test(label)) {
+            return -1;
+        }
+
+        const rect = button.getBoundingClientRect();
+        const compact = rect.width >= 18 && rect.width <= 76 && rect.height >= 18 && rect.height <= 76;
+        const lower = rect.top > window.innerHeight * 0.42 || rect.bottom > window.innerHeight * 0.66;
+        const hasSvg = Boolean(button.querySelector && button.querySelector('svg'));
+        let score = 0;
+
+        if (label && VOICE_START_LABEL_RE.test(label)) {
+            score += 260;
+        }
+        if (/dictate|dictation|microphone|mic|dicter|dict[eé]e|micro/i.test(label)) {
+            score += 180;
+        }
+        if (compact) {
+            score += 40;
+        }
+        if (lower) {
+            score += 60;
+        }
+        if (hasSvg) {
+            score += 25;
+        }
+        if (composerRoot && composerRoot.contains(button)) {
+            score += 90;
+        }
+        return score;
+    }
+
+    function findVoiceStartButton() {
+        const composerRoot = findComposerRoot();
+        const roots = composerRoot ? [composerRoot, document] : [document];
+        const selectors = [
+            'button[aria-label*="dict" i]',
+            'button[aria-label*="micro" i]',
+            'button[aria-label*="mic" i]',
+            'button[aria-label*="voice input" i]',
+            'button[aria-label*="voice typing" i]',
+            'button[aria-label*="saisie vocale" i]',
+            'button[aria-label*="transcription" i]',
+            'button[title*="dict" i]',
+            'button[title*="micro" i]',
+            'button[title*="mic" i]',
+            'button[data-testid*="dict" i]',
+            'button[data-testid*="micro" i]',
+            'button[data-testid*="mic" i]',
+            'button',
+            '[role="button"]'
+        ];
+        const seen = new Set();
+        const candidates = [];
+
+        for (const root of roots) {
+            for (const selector of selectors) {
+                for (const button of safeQueryAll(root, selector)) {
+                    if (seen.has(button)) {
+                        continue;
+                    }
+                    seen.add(button);
+                    const score = scoreVoiceStartButton(button, composerRoot);
+                    if (score < 120) {
+                        continue;
+                    }
+                    const rect = button.getBoundingClientRect();
+                    candidates.push({ button, score, rect });
+                }
+            }
+        }
+
+        if (candidates.length === 0) {
+            return null;
+        }
+
+        candidates.sort((a, b) => {
+            if (b.score !== a.score) {
+                return b.score - a.score;
+            }
+            if (b.rect.bottom !== a.rect.bottom) {
+                return b.rect.bottom - a.rect.bottom;
+            }
+            return b.rect.right - a.rect.right;
+        });
+
+        return candidates[0].button;
+    }
+
     function findTranscriptionFinishButton() {
         const composerRoot = findComposerRoot();
         const candidates = [];
@@ -1750,6 +2195,7 @@
     function resetAutoReadAloudFlow() {
         autoReadAloudClickedAt = 0;
         autoReadAloudSeenStop = false;
+        autoReadAloudAttemptCount = 0;
     }
 
     async function waitForTriggeredReadAloudBeforeAutoStart() {
@@ -1759,11 +2205,6 @@
         if (!state.triggerReadAloudEnabled) {
             return true;
         }
-        if (hasActiveVoiceRecordingEvidence()) {
-            setStatus('Trigger ReadAloud blocked / voice recording active');
-            return false;
-        }
-
         const stopVisible = detectVisiblePageReadAloudStop();
         if (stopVisible) {
             autoReadAloudSeenStop = true;
@@ -1784,6 +2225,18 @@
                 setStatus('Waiting ReadAloud start');
                 return false;
             }
+
+            if (!autoReadAloudSeenStop && isLastAssistantReadAloudReadySignalAvailable() && autoReadAloudAttemptCount < 4) {
+                const retryOk = await clickChatGPTReadAloudMenuAction('start');
+                if (retryOk) {
+                    autoReadAloudAttemptCount += 1;
+                    autoReadAloudClickedAt = now();
+                    setStatus('Trigger ReadAloud retry ' + autoReadAloudAttemptCount);
+                    updateWidget();
+                    return false;
+                }
+            }
+
             if (isLastAssistantReadAloudReadySignalAvailable()) {
                 setStatus('ReadAloud done / start voice');
                 return true;
@@ -1804,6 +2257,7 @@
         }
         autoReadAloudClickedAt = now();
         autoReadAloudSeenStop = false;
+        autoReadAloudAttemptCount = 1;
         state.pageReadAloudActive = true;
         setStatus('Trigger ReadAloud started');
         updateWidget();
@@ -1887,7 +2341,7 @@
             return true;
         }
 
-        const startButton = findTranscriptionFinishButton();
+        const startButton = findVoiceStartButton();
         if (!startButton) {
             setStatus('Start mic not found');
             return false;
@@ -2181,6 +2635,7 @@
         updateWidget();
         setStatus(statusMessage || 'ReadAloud stopped');
         window.setTimeout(syncPageReadAloudState, 700);
+        continueFullFlowAfterManualReadAloud('ReadAloud stopped / start voice');
         return true;
     }
 
@@ -2208,7 +2663,16 @@
             }
             setStatus(statusMessage || 'FULL FLOW NO');
         } else {
-            cycleDone = !state.enabled;
+            state.enabled = true;
+            state.sendEnabled = true;
+            state.triggerReadAloudEnabled = true;
+            await saveStatePatch({
+                enabled: true,
+                sendEnabled: true,
+                triggerReadAloudEnabled: true
+            });
+
+            cycleDone = false;
             vClickedThisCycle = false;
             sendAttemptedThisCycle = false;
             pendingSendAfterV = false;
@@ -2216,20 +2680,14 @@
             lastComposerText = '';
             composerStableSince = 0;
             waitingUserInputAfterResponse = false;
-            skipReadAloudGateOnce = false;
             manualVoiceSessionSeen = hasActiveVoiceRecordingEvidence();
-            if (state.enabled) {
-                cycleDone = false;
-                autoStartArmed = !manualVoiceSessionSeen;
-                if (autoStartArmed) {
-                    setStatus(statusMessage || 'FULL FLOW YES / waiting response');
-                } else {
-                    setStatus(statusMessage || 'FULL FLOW YES / TOS active');
-                }
-            } else {
-                autoStartArmed = false;
-                setStatus(statusMessage || 'FULL FLOW YES');
-            }
+            autoStartArmed = !manualVoiceSessionSeen;
+            skipReadAloudGateOnce = autoStartArmed;
+            autoStartBusy = false;
+            lastAutoStartAt = 0;
+            lastAutoStartCheckAt = 0;
+            resetAutoReadAloudFlow();
+            setStatus(statusMessage || (autoStartArmed ? 'FULL FLOW YES / start voice' : 'FULL FLOW YES / TOS active'));
         }
         updateWidget();
     }
@@ -2675,15 +3133,20 @@
         brandBadge.title = 'Contact Bruno DELNOZ: click @NoXoZ_be to send an email.';
         widget.appendChild(brandBadge);
 
+        const devRow = document.createElement('div');
+        devRow.id = 'cgas-mini-dev-row';
+
         const versionBadge = document.createElement('div');
         versionBadge.id = 'cgas-mini-version-badge';
         versionBadge.textContent = 'v' + VERSION;
-        widget.appendChild(versionBadge);
+        devRow.appendChild(versionBadge);
 
-        const reloadButton = makeButton('Reload Ext', 'cgas-mini-full-thin cgas-mini-reload-ext', handleReloadExtensionClick);
+        const reloadButton = makeButton('↻', 'cgas-mini-dev-reload', handleReloadExtensionClick);
         reloadButton.id = 'cgas-mini-reload-ext';
-        reloadButton.title = 'Reload extension then refresh current tab';
-        widget.appendChild(reloadButton);
+        reloadButton.title = 'Developer reload: reload unpacked extension from disk, then refresh ChatGPT';
+        devRow.appendChild(reloadButton);
+
+        widget.appendChild(devRow);
 
         const platformButton = makeButton('Mode: ChatGPT', 'cgas-mini-full-thin cgas-mini-platform-mode', togglePlatformMode);
         platformButton.id = 'cgas-mini-platform-mode';
@@ -2989,7 +3452,7 @@
 
         const reloadButton = document.getElementById('cgas-mini-reload-ext');
         if (reloadButton) {
-            reloadButton.textContent = state.maximized ? 'Reload Extension' : 'Reload Ext';
+            reloadButton.textContent = '↻';
         }
 
         const platformProfile = getActivePlatformProfile();
@@ -3065,7 +3528,8 @@
                 setStatus('FULL FLOW YES / TOS active');
             } else if (state.enabled) {
                 autoStartArmed = true;
-                setStatus('FULL FLOW YES / waiting response');
+                skipReadAloudGateOnce = true;
+                setStatus('FULL FLOW YES / start voice');
             } else {
                 setStatus('FULL FLOW YES');
             }

@@ -246,3 +246,7 @@ ChatGPT, Claude, Brave, Chrome, Chromium, and all other third-party names, produ
 **Bruno DELNOZ**  
 Developer identity: **@NoXoZ_be**  
 Belgium
+
+## Firefox WebExtension build
+
+The same runtime can now be loaded in Firefox as a WebExtension from the repository root `manifest.json`. Firefox-specific compatibility is handled by Gecko manifest metadata plus a cross-browser popup bridge that supports both `browser.*` Promise APIs and Chromium/Brave `chrome.*` callback APIs. See [FIREFOX.md](FIREFOX.md) for temporary-install steps and parity notes.

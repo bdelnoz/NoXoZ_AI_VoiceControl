@@ -1,7 +1,7 @@
 /* Project: NoXoZ_AI_VoiceControl
  * Project root: /mnt/data2_78g/Security/scripts/Projects_web/NoXoZ_AI_VoiceControl/
- * Version: v8.0.0
- * Date: 2026-06-16
+ * Version: v8.9.0
+ * Date: 2026-06-28
  */
 
 /*
@@ -12,8 +12,8 @@
  * DEVELOPER    : @NoXoZ_be
  * EMAIL        : bruno.delnoz@protonmail.com
  * TARGET USAGE : Personal mini ChatGPT VTT T.O.S. widget styling.
- * VERSION      : v7.9
- * DATE         : 2026-06-06 07:10 CEST
+ * VERSION      : v8.9.0
+ * DATE         : 2026-06-28 CEST
  * ==============================================================================
  */
 
@@ -387,16 +387,19 @@
 
 #cgas-mini-status {
     margin-top: 5px;
-    min-height: 13px;
+    min-height: 22px;
+    max-height: 30px;
     padding: 2px 3px;
     border-radius: 7px;
     background: rgba(3, 7, 18, 0.76);
     border: 1px solid rgba(163, 230, 53, 0.20);
     color: #d9f99d;
     font-size: 8px;
-    white-space: nowrap;
+    line-height: 1.12;
+    white-space: normal;
     overflow: hidden;
-    text-overflow: ellipsis;
+    text-overflow: clip;
+    overflow-wrap: anywhere;
 }
 
 #cgas-mini-brand-badge,
@@ -562,8 +565,10 @@
 }
 
 #cgas-mini-widget.cgas-mini-maximized #cgas-mini-status {
-    min-height: 20px;
-    font-size: 11px;
+    min-height: 34px;
+    max-height: 42px;
+    font-size: 10.5px;
+    line-height: 1.12;
     margin-top: 7px;
 }
 
@@ -926,4 +931,46 @@
 
 #cgas-mini-widget:not(.cgas-mini-maximized):not(.cgas-mini-minimized) #cgas-mini-title {
     font-size: 8px;
+}
+
+
+/* =============================================================================
+   v8.9.0 PRIVATE CHECKPOINT OVERRIDES
+   ============================================================================= */
+
+#cgas-mini-dev-row {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    margin-top: 2px;
+}
+
+#cgas-mini-widget.cgas-mini-maximized #cgas-mini-dev-row {
+    display: flex;
+}
+
+#cgas-mini-widget.cgas-mini-minimized #cgas-mini-dev-row,
+#cgas-mini-widget:not(.cgas-mini-maximized):not(.cgas-mini-minimized) #cgas-mini-dev-row {
+    display: none !important;
+}
+
+#cgas-mini-widget.cgas-mini-maximized #cgas-mini-reload-ext {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    min-width: 16px;
+    height: 13px;
+    min-height: 13px;
+    margin: 0;
+    padding: 0;
+    border-radius: 999px;
+    font-size: 9px;
+    line-height: 1;
+    opacity: 0.58;
+}
+
+#cgas-mini-widget.cgas-mini-maximized #cgas-mini-reload-ext:hover {
+    opacity: 1;
 }
