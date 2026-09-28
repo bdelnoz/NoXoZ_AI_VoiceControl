@@ -8,10 +8,24 @@
  * PROJECT      : NoXoZ_AI_VoiceControl
  * PROJECT ROOT : /mnt/data2_78g/Security/scripts/Projects_web/NoXoZ_AI_VoiceControl/
  * TARGET USAGE : Personal dual-mode ChatGPT / Claude modular voice-flow controller.
- * VERSION      : v8.9.0
+ * VERSION      : v8.9.4
  * DATE         : 2026-06-28 CEST
  * ==============================================================================
  * CHANGELOG:
+ *   v8.9.2 – 2026-06-30 – Bruno DELNOZ / ChatGPT
+ *       Fixed:
+ *       - Default Time of Silence restored to 3 seconds.
+ *       Preserved:
+ *       - Reload Extension v8.9.1 behavior unchanged.
+ *       - No Full Flow, ReadAloud, AutoSend, UI, CSS or selector behavior changed.
+ *
+ *   v8.9.1 – 2026-06-30 – Bruno DELNOZ / ChatGPT
+ *       Fixed:
+ *       - Reload Extension now uses the same direct storage-flag/runtime-reload bridge as ChatGPT Export v3.1.3.
+ *       - Content script sends only CGAS_RELOAD_EXTENSION after setting cgas.refreshAfterReload.
+ *       Preserved:
+ *       - No Full Flow, ReadAloud, AutoSend, TOS, UI, CSS or selector behavior changed.
+ *
  *   v8.9.0 – 2026-06-28 – Bruno DELNOZ / ChatGPT
  *       Changed:
  *       - Stable checkpoint release derived from v8.2.1.
@@ -263,7 +277,7 @@
 (function initBraveDualAutoSendMini() {
     'use strict';
 
-    const VERSION = '8.9.0';
+    const VERSION = '8.9.4';
     const WIDGET_ID = 'cgas-mini-widget';
 
     function getExtensionApi() {
@@ -326,7 +340,7 @@
         autoStartCheckMs: 700,
         tosMinSeconds: 0,
         tosMaxSeconds: 30,
-        tosDefaultSeconds: 5,
+        tosDefaultSeconds: 3,
         thresholdMin: 0,
         thresholdMax: 100,
         thresholdDefault: 35,
@@ -389,6 +403,10 @@
     let autoReadAloudClickedAt = 0;
     let autoReadAloudSeenStop = false;
     let autoReadAloudAttemptCount = 0;
+    let autoReadAloudMessageKey = '';
+    let autoReadAloudCompletedMessageKey = '';
+    let autoReadAloudLastMenuInspectAt = 0;
+    let autoReadAloudLastKnownMenuMode = '';
     let lastAutoStartAt = 0;
     let cycleDone = true;
     let vClickedThisCycle = false;
@@ -1053,6 +1071,86 @@
         return candidates[0].root;
     }
 
+    function getAssistantMessageKey(root) {
+        const messageRoot = root || getLastAssistantMessageRoot();
+        if (!messageRoot) {
+            return '';
+        }
+
+        const messageWithId = messageRoot.matches && messageRoot.matches('[data-message-id]')
+            ? messageRoot
+            : messageRoot.querySelector && messageRoot.querySelector('[data-message-id]');
+
+        if (messageWithId) {
+            const messageId = messageWithId.getAttribute('data-message-id');
+            if (messageId) {
+                return 'id:' + messageId;
+            }
+        }
+
+        const turnId = messageRoot.getAttribute && (
+            messageRoot.getAttribute('data-testid') ||
+            messageRoot.getAttribute('data-turn-id') ||
+            messageRoot.getAttribute('id')
+        );
+        if (turnId) {
+            return 'turn:' + turnId;
+        }
+
+        return 'hash:' + hashText(normalizeSpace(messageRoot.textContent || '').slice(0, 1200));
+    }
+
+    function sendEscapeKeyToCloseFloatingMenus() {
+        try {
+            const eventInit = {
+                bubbles: true,
+                cancelable: true,
+                key: 'Escape',
+                code: 'Escape',
+                keyCode: 27,
+                which: 27
+            };
+            document.dispatchEvent(new KeyboardEvent('keydown', eventInit));
+            document.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+        } catch (error) {
+            logRuntimeError('close ReadAloud menu failed', error);
+        }
+    }
+
+    async function inspectLastAssistantReadAloudMenuMode(messageRoot) {
+        const root = messageRoot || getLastAssistantMessageRoot();
+        if (!root) {
+            return 'unknown';
+        }
+
+        if (findReadAloudActionCandidate('stop', root) || findReadAloudActionCandidate('stop', document)) {
+            return 'stop';
+        }
+        if (findReadAloudActionCandidate('start', root)) {
+            return 'start';
+        }
+
+        const more = findMoreActionsButton(root);
+        if (!more) {
+            return 'unknown';
+        }
+
+        clickLikeUser(more);
+        await sleep(260);
+
+        const hasStop = Boolean(findReadAloudActionCandidate('stop', document));
+        const hasStart = Boolean(findReadAloudActionCandidate('start', document));
+        sendEscapeKeyToCloseFloatingMenus();
+
+        if (hasStop) {
+            return 'stop';
+        }
+        if (hasStart) {
+            return 'start';
+        }
+        return 'unknown';
+    }
+
     function clickLikeUser(el) {
         if (!el) {
             return false;
@@ -1458,7 +1556,7 @@
     }
 
     async function handleReloadExtensionClick() {
-        setStatus('Reload Extension / prepare');
+        setStatus('Reloading…');
 
         /* Reload defaults: Full Flow NO; operational sub-toggles YES; MAXI mode. */
         state.fullFlowEnabled = false;
@@ -1493,37 +1591,25 @@
                 return;
             }
 
-            const prepared = await extensionApi.runtime.sendMessage({
-                type: 'CGAS_RELOAD_EXTENSION_PREPARE',
-                sourceVersion: VERSION
+            await new Promise((resolve, reject) => {
+                try {
+                    extensionApi.storage.local.set({ 'cgas.refreshAfterReload': true }, () => {
+                        const runtimeError = extensionApi.runtime.lastError;
+                        if (runtimeError) {
+                            reject(runtimeError);
+                            return;
+                        }
+                        resolve();
+                    });
+                } catch (error) {
+                    reject(error);
+                }
             });
 
-            if (!prepared || !prepared.ok) {
-                setStatus('Reload bridge prepare failed');
-                return;
-            }
-
-            setStatus('Reload Extension / runtime reload');
-
-            try {
-                const execute = extensionApi.runtime.sendMessage({
-                    type: 'CGAS_RELOAD_EXTENSION_EXECUTE',
-                    sourceVersion: VERSION
-                });
-                if (execute && typeof execute.catch === 'function') {
-                    execute.catch((error) => {
-                        const message = error && error.message ? error.message : String(error || '');
-                        if (!/context invalidated|extension context|receiving end|message port closed/i.test(message)) {
-                            console.log('[CGAS Mini] reload execute send failed:', message);
-                        }
-                    });
-                }
-            } catch (error) {
-                const message = error && error.message ? error.message : String(error || '');
-                if (!/context invalidated|extension context|receiving end|message port closed/i.test(message)) {
-                    console.log('[CGAS Mini] reload execute send crashed:', message);
-                }
-            }
+            extensionApi.runtime.sendMessage({
+                type: 'CGAS_RELOAD_EXTENSION',
+                sourceVersion: VERSION
+            });
         } catch (error) {
             setStatus('Reload bridge failed');
             console.log('[CGAS Mini] reload bridge failed:', error && error.message ? error.message : error);
@@ -2196,6 +2282,10 @@
         autoReadAloudClickedAt = 0;
         autoReadAloudSeenStop = false;
         autoReadAloudAttemptCount = 0;
+        autoReadAloudMessageKey = '';
+        autoReadAloudCompletedMessageKey = '';
+        autoReadAloudLastMenuInspectAt = 0;
+        autoReadAloudLastKnownMenuMode = '';
     }
 
     async function waitForTriggeredReadAloudBeforeAutoStart() {
@@ -2205,44 +2295,67 @@
         if (!state.triggerReadAloudEnabled) {
             return true;
         }
+
+        const messageRoot = getLastAssistantMessageRoot();
+        const messageKey = getAssistantMessageKey(messageRoot);
+        if (!messageRoot || !messageKey) {
+            setStatus('Waiting ReadAloud');
+            return false;
+        }
+
+        if (autoReadAloudCompletedMessageKey === messageKey) {
+            state.pageReadAloudActive = false;
+            setStatus('ReadAloud already done / start voice');
+            return true;
+        }
+
+        if (autoReadAloudMessageKey && autoReadAloudMessageKey !== messageKey) {
+            resetAutoReadAloudFlow();
+        }
+
         const stopVisible = detectVisiblePageReadAloudStop();
         if (stopVisible) {
             autoReadAloudSeenStop = true;
+            autoReadAloudLastKnownMenuMode = 'stop';
             state.pageReadAloudActive = true;
             setStatus('Trigger ReadAloud playing');
             return false;
         }
 
-        if (autoReadAloudClickedAt > 0) {
-            if (autoReadAloudSeenStop) {
-                state.pageReadAloudActive = false;
+        if (autoReadAloudClickedAt > 0 && autoReadAloudMessageKey === messageKey) {
+            const ageMs = now() - autoReadAloudClickedAt;
+
+            if (now() - autoReadAloudLastMenuInspectAt > 1300) {
+                autoReadAloudLastMenuInspectAt = now();
+                autoReadAloudLastKnownMenuMode = await inspectLastAssistantReadAloudMenuMode(messageRoot);
             }
-            if (autoReadAloudSeenStop && isLastAssistantReadAloudReadySignalAvailable()) {
-                setStatus('ReadAloud done / start voice');
-                return true;
-            }
-            if (now() - autoReadAloudClickedAt < 2400) {
-                setStatus('Waiting ReadAloud start');
+
+            if (autoReadAloudLastKnownMenuMode === 'stop') {
+                autoReadAloudSeenStop = true;
+                state.pageReadAloudActive = true;
+                setStatus('Trigger ReadAloud playing');
                 return false;
             }
 
-            if (!autoReadAloudSeenStop && isLastAssistantReadAloudReadySignalAvailable() && autoReadAloudAttemptCount < 4) {
-                const retryOk = await clickChatGPTReadAloudMenuAction('start');
-                if (retryOk) {
-                    autoReadAloudAttemptCount += 1;
-                    autoReadAloudClickedAt = now();
-                    setStatus('Trigger ReadAloud retry ' + autoReadAloudAttemptCount);
-                    updateWidget();
-                    return false;
-                }
-            }
-
-            if (isLastAssistantReadAloudReadySignalAvailable()) {
+            if (autoReadAloudSeenStop && autoReadAloudLastKnownMenuMode === 'start') {
+                autoReadAloudCompletedMessageKey = messageKey;
+                state.pageReadAloudActive = false;
                 setStatus('ReadAloud done / start voice');
                 return true;
             }
-            setStatus('Waiting ReadAloud end');
-            return false;
+
+            if (!autoReadAloudSeenStop && ageMs < 9000) {
+                setStatus('Waiting ReadAloud end');
+                return false;
+            }
+
+            /* Anti-loop guard: once this assistant message has been clicked,
+               never click ReadAloud for the same message again. If the Stop
+               state was not observable, consume this trigger and move on. */
+            autoReadAloudCompletedMessageKey = messageKey;
+            state.pageReadAloudActive = false;
+            setStatus('ReadAloud trigger consumed / start voice');
+            return true;
         }
 
         if (!isLastAssistantReadAloudReadySignalAvailable()) {
@@ -2258,6 +2371,10 @@
         autoReadAloudClickedAt = now();
         autoReadAloudSeenStop = false;
         autoReadAloudAttemptCount = 1;
+        autoReadAloudMessageKey = messageKey;
+        autoReadAloudCompletedMessageKey = '';
+        autoReadAloudLastMenuInspectAt = 0;
+        autoReadAloudLastKnownMenuMode = '';
         state.pageReadAloudActive = true;
         setStatus('Trigger ReadAloud started');
         updateWidget();
